@@ -160,6 +160,58 @@ class C02IncubatorSerialPort implements PWSerialPortListener {
         return result;
     }
 
+
+    private boolean processBytesBuffer() {
+        while (this.buffer.readableBytes() < 4) {
+            return true;
+        }
+        byte[] header = new byte[C02IncubatorTools.HEADER.length];
+        this.buffer.getBytes(0, header);
+        byte command = this.buffer.getByte(3);
+        if (!C02IncubatorTools.checkHeader(header)) {
+            return this.ignorePackage();
+        }
+        if (!C02IncubatorTools.checkCommand(command)) {
+            //当前指令不合法 丢掉正常的包头以免重复判断
+            this.buffer.resetReaderIndex();
+            this.buffer.skipBytes(2);
+            this.buffer.discardReadBytes();
+            return this.ignorePackage();
+        }
+
+        int frameLength = 0xFF & this.buffer.getByte(2) + 3;
+        if (this.buffer.readableBytes() < frameLength) {
+            return true;
+        }
+        this.buffer.markReaderIndex();
+        byte[] data = new byte[frameLength];
+        this.buffer.readBytes(data, 0, data.length);
+
+        if (!C02IncubatorTools.checkFrame(data)) {
+            this.buffer.resetReaderIndex();
+            //当前包不合法 丢掉正常的包头以免重复判断
+            this.buffer.skipBytes(2);
+            this.buffer.discardReadBytes();
+            return this.ignorePackage();
+        }
+        this.buffer.discardReadBytes();
+        if (!this.ready) {
+            this.ready = true;
+            if (null != this.listener && null != this.listener.get()) {
+                this.listener.get().onC02IncubatorReady();
+            }
+        }
+        this.switchWriteModel();
+        if (null != this.listener && null != this.listener.get()) {
+            this.listener.get().onC02IncubatorPrint("C02IncubatorSerialPort Recv:" + C02IncubatorTools.bytes2HexString(data, true, ", "));
+        }
+        Message msg = Message.obtain();
+        msg.obj = data;
+        msg.what = 0x01;
+        this.handler.sendMessage(msg);
+        return true;
+    }
+
     @Override
     public void onConnected(PWSerialPortHelper helper) {
         if (!this.isInitialized() || !helper.equals(this.helper)) {
@@ -205,53 +257,12 @@ class C02IncubatorSerialPort implements PWSerialPortListener {
     }
 
     @Override
-    public void onByteReceived(PWSerialPortHelper helper, byte[] buffer, int length) throws IOException {
+    public boolean onByteReceived(PWSerialPortHelper helper, byte[] buffer, int length) throws IOException {
         if (!this.isInitialized() || !helper.equals(this.helper)) {
-            return;
+            return false;
         }
         this.buffer.writeBytes(buffer, 0, length);
-        while (this.buffer.readableBytes() >= 4) {
-            byte[] header = new byte[C02IncubatorTools.HEADER.length];
-            this.buffer.getBytes(0, header);
-            byte command = this.buffer.getByte(3);
-            if (!C02IncubatorTools.checkHeader(header) || !C02IncubatorTools.checkCommand(command)) {
-                if (this.ignorePackage()) {
-                    continue;
-                } else {
-                    break;
-                }
-            }
-            int frameLength = 0xFF & this.buffer.getByte(2) + 3;
-            if (this.buffer.readableBytes() < frameLength) {
-                break;
-            }
-            this.buffer.markReaderIndex();
-            byte[] data = new byte[frameLength];
-            this.buffer.readBytes(data, 0, data.length);
-
-            if (!C02IncubatorTools.checkFrame(data)) {
-                this.buffer.resetReaderIndex();
-                //当前包不合法 丢掉正常的包头以免重复判断
-                this.buffer.skipBytes(4);
-                this.buffer.discardReadBytes();
-                continue;
-            }
-            this.buffer.discardReadBytes();
-            if (!this.ready) {
-                this.ready = true;
-                if (null != this.listener && null != this.listener.get()) {
-                    this.listener.get().onC02IncubatorReady();
-                }
-            }
-            this.switchWriteModel();
-            if (null != this.listener && null != this.listener.get()) {
-                this.listener.get().onC02IncubatorPrint("C02IncubatorSerialPort Recv:" + C02IncubatorTools.bytes2HexString(data, true, ", "));
-            }
-            Message msg = Message.obtain();
-            msg.obj = data;
-            msg.what = 0x01;
-            this.handler.sendMessage(msg);
-        }
+        return this.processBytesBuffer();
     }
 
 
@@ -274,7 +285,7 @@ class C02IncubatorSerialPort implements PWSerialPortListener {
                 }
                 case 0x01:
                     if (null != C02IncubatorSerialPort.this.listener && null != C02IncubatorSerialPort.this.listener.get()) {
-                        C02IncubatorSerialPort.this.listener.get().onC02IncubatorPackageReceived( (byte[]) msg.obj);
+                        C02IncubatorSerialPort.this.listener.get().onC02IncubatorPackageReceived((byte[]) msg.obj);
                     }
                     break;
             }
